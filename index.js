@@ -13,7 +13,7 @@ dotenv.config({
 })
 
 app.use(cors({
-    origin:'https://client-side-2-0.vercel.app',
+    origin:'https://woopab.vercel.app',
     credentials:true
 }))
 app.use(cookieParser())

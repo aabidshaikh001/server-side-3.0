@@ -16,7 +16,7 @@ const app = express();
 
 // CORS Middleware for express
 app.use(cors({
-    origin:'https://client-side-2-0.vercel.app',
+    origin:'https://woopab.vercel.app',
     credentials: true,
 }));
 
@@ -24,7 +24,7 @@ app.use(cors({
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: {
-        origin:'https://client-side-2-0.vercel.app',
+        origin:'https://woopab.vercel.app',
         credentials: true,
     },
 });
