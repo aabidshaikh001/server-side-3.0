@@ -1,8 +1,7 @@
 // server.js
 import express from 'express';
 import { Server } from 'socket.io';
-import https from 'https';   // Use https instead of http
-import fs from 'fs';         // To read SSL certificates
+import http from 'http';
 import getuserDetailsfromtoken from '../helper/getuserDetails.js';
 import { User } from '../modal/user.modal.js';
 import { Conversation, Message } from '../modal/conversation.modal.js';
@@ -12,88 +11,90 @@ import cors from 'cors';
 // Load environment variables
 dotenv.config();
 
-// Create the express app
+// Validate required environment variables
+const requiredEnvVars = ['PORT', 'DATABASE_URL']; // Add more as needed
+const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
+
+if (missingEnvVars.length > 0) {
+    throw new Error(`Missing environment variables: ${missingEnvVars.join(', ')}`);
+}
+
 const app = express();
 
 // CORS Middleware for express
 app.use(cors({
-    origin: 'https://woopab.vercel.app',
+    origin: 'https://client-side-2-0.vercel.app',
     credentials: true,
 }));
 
-// SSL credentials (replace these paths with your actual certificate and key paths)
-const sslOptions = {
-    key: fs.readFileSync('/path/to/your/server.key'),   // Path to private key
-    cert: fs.readFileSync('/path/to/your/server.cert'), // Path to SSL certificate
-};
-
-// Create HTTPS server
-const server = https.createServer(sslOptions, app);
-
-// Initialize Socket.io with HTTPS server
+// Create HTTP server and Socket.io server
+const server = http.createServer(app);
 const io = new Server(server, {
     cors: {
-        origin: 'https://woopab.vercel.app',
+        origin: 'https://client-side-2-0.vercel.app',
         credentials: true,
     },
 });
 
 // Track online users
-const onlineUser = new Set();
+const onlineUsers = new Set();
+
+// Centralized error handling middleware
+const handleError = (socket, errorMessage) => {
+    console.error(errorMessage);
+    socket.emit('error', errorMessage);
+};
 
 // Socket.io connection
 io.on('connection', async (socket) => {
     console.log("User connected:", socket.id);
 
-    // Token validation and user retrieval
     try {
         const token = socket.handshake.auth.token;
         const user = await getuserDetailsfromtoken(token);
         if (!user) {
-            console.log('Invalid token or user not found');
-            return socket.disconnect();  // Disconnect if token is invalid
+            return handleError(socket, 'Invalid token or user not found');
         }
 
         // Create a room for the user and track them online
-        socket.join(user?._id.toString());
-        onlineUser.add(user?._id.toString());
+        socket.join(user._id.toString());
+        onlineUsers.add(user._id.toString());
 
         // Emit updated online user list
-        io.emit('onlineUser', Array.from(onlineUser));
+        io.emit('onlineUser', Array.from(onlineUsers));
 
         // Handle message page requests
         socket.on('message-page', async (userId) => {
             try {
-                const userDetails = await User.findById(userId).select("-password");
+                const userDetails = await User.findById(userId).select("-password").lean();
                 const payload = {
                     _id: userDetails?._id,
                     name: userDetails?.name,
                     email: userDetails?.email,
-                    online: onlineUser.has(userId),
+                    online: onlineUsers.has(userId),
                     profilePic: userDetails?.profilePic,
                 };
                 socket.emit('message-user', payload);
 
-                let getConversationMessage = await Conversation.findOne({
+                let conversation = await Conversation.findOne({
                     "$or": [
-                        { sender: user?._id, receiver: userId },
-                        { sender: userId, receiver: user?._id },
+                        { sender: user._id, receiver: userId },
+                        { sender: userId, receiver: user._id },
                     ]
-                }).populate('message').sort({ updatedAt: -1 });
+                }).populate('message').sort({ updatedAt: -1 }).lean();
 
-                if (getConversationMessage) {
-                    socket.emit('message', getConversationMessage.message);
+                if (conversation) {
+                    socket.emit('message', conversation.message);
                 } else {
                     const newConversation = new Conversation({
-                        sender: user?._id,
+                        sender: user._id,
                         receiver: userId,
                     });
                     await newConversation.save();
                     socket.emit('message', []);  // No previous messages
                 }
             } catch (error) {
-                console.error("Error on message-page:", error);
-                socket.emit('error', 'Unable to load messages.');
+                handleError(socket, 'Unable to load messages.');
             }
         });
 
@@ -102,62 +103,71 @@ io.on('connection', async (socket) => {
             try {
                 let conversation = await Conversation.findOne({
                     "$or": [
-                        { sender: data?.sender, receiver: data?.receiver },
-                        { sender: data?.receiver, receiver: data?.sender },
+                        { sender: data.sender, receiver: data.receiver },
+                        { sender: data.receiver, receiver: data.sender },
                     ],
                 });
 
                 if (!conversation) {
-                    const createConversation = new Conversation({
-                        sender: data?.sender,
-                        receiver: data?.receiver,
-                    });
-                    conversation = await createConversation.save();
+                    conversation = await new Conversation({
+                        sender: data.sender,
+                        receiver: data.receiver,
+                    }).save();
                 }
 
                 const message = new Message({
                     text: data.text,
                     imageUrl: data.imageUrl,
                     videoUrl: data.videoUrl,
-                    msgByuserId: data?.msgByuserId,
+                    msgByuserId: data.msgByuserId,
                 });
-                const saveMessage = await message.save();
+                const savedMessage = await message.save();
 
                 await Conversation.updateOne(
-                    { _id: conversation?._id },
-                    { "$push": { message: saveMessage?._id } }
+                    { _id: conversation._id },
+                    { "$push": { message: savedMessage._id } }
                 );
 
-                const getConversationMessage = await Conversation.findOne({
+                const updatedConversation = await Conversation.findOne({
                     "$or": [
-                        { sender: data?.sender, receiver: data?.receiver },
-                        { sender: data?.receiver, receiver: data?.sender },
+                        { sender: data.sender, receiver: data.receiver },
+                        { sender: data.receiver, receiver: data.sender },
                     ],
-                }).populate('message').sort({ updatedAt: -1 });
+                }).populate('message').sort({ updatedAt: -1 }).lean();
 
-                io.to(data?.sender).emit('message', getConversationMessage?.message || []);
-                io.to(data?.receiver).emit('message', getConversationMessage?.message || []);
+                io.to(data.sender).emit('message', updatedConversation.message || []);
+                io.to(data.receiver).emit('message', updatedConversation.message || []);
             } catch (error) {
-                console.error("Error sending message:", error);
-                socket.emit('error', 'Unable to send message.');
+                handleError(socket, 'Unable to send message.');
             }
         });
 
         socket.on('disconnect', () => {
-            onlineUser.delete(user?._id?.toString());
+            onlineUsers.delete(user._id.toString());
             console.log('User disconnected:', socket.id);
         });
 
     } catch (error) {
-        console.error("Error during socket connection:", error);
-        socket.emit('error', 'Invalid token or user.');
+        handleError(socket, 'Invalid token or user.');
     }
 });
 
 // Start the server
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000; // Default port for local development
 server.listen(PORT, () => {
-    console.log(`Server running on https://localhost:${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });
+
+// Graceful shutdown
+const shutdown = () => {
+    console.log('Shutting down server...');
+    server.close(() => {
+        console.log('Server closed.');
+        process.exit(0);
+    });
+};
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 
 export { app, server };
