@@ -1,8 +1,8 @@
-//if this code is not working please try a code on destop
+// server.js
 import express from 'express';
 import { Server } from 'socket.io';
-import http from 'http';
-import { Client } from 'ssh2';  // Import SSH2
+import https from 'https';   // Use https instead of http
+import fs from 'fs';         // To read SSL certificates
 import getuserDetailsfromtoken from '../helper/getuserDetails.js';
 import { User } from '../modal/user.modal.js';
 import { Conversation, Message } from '../modal/conversation.modal.js';
@@ -12,19 +12,28 @@ import cors from 'cors';
 // Load environment variables
 dotenv.config();
 
+// Create the express app
 const app = express();
 
 // CORS Middleware for express
 app.use(cors({
-    origin:'https://woopab.vercel.app',
+    origin: 'https://woopab.vercel.app',
     credentials: true,
 }));
 
-// Create HTTP server and Socket.io server
-const server = http.createServer(app);
+// SSL credentials (replace these paths with your actual certificate and key paths)
+const sslOptions = {
+    key: fs.readFileSync('/path/to/your/server.key'),   // Path to private key
+    cert: fs.readFileSync('/path/to/your/server.cert'), // Path to SSL certificate
+};
+
+// Create HTTPS server
+const server = https.createServer(sslOptions, app);
+
+// Initialize Socket.io with HTTPS server
 const io = new Server(server, {
     cors: {
-        origin:'https://woopab.vercel.app',
+        origin: 'https://woopab.vercel.app',
         credentials: true,
     },
 });
@@ -32,49 +41,24 @@ const io = new Server(server, {
 // Track online users
 const onlineUser = new Set();
 
-// Helper function to establish SSH connection
-const executeSSHCommand = (command) => {
-    return new Promise((resolve, reject) => {
-        const conn = new Client();
-        conn.on('ready', () => {
-            console.log('SSH Client :: ready');
-            conn.exec(command, (err, stream) => {
-                if (err) return reject(err);
-                let output = '';
-                stream.on('close', (code, signal) => {
-                    console.log('Stream :: close :: code: ' + code + ', signal: ' + signal);
-                    conn.end();
-                    resolve(output);
-                }).on('data', (data) => {
-                    output += data.toString();
-                }).stderr.on('data', (data) => {
-                    console.error('STDERR: ' + data);
-                });
-            });
-        }).connect({
-            host: 'your-remote-server.com',
-            port: 22,
-            username: 'your-username',
-            privateKey: require('fs').readFileSync('/path/to/private-key.pem')
-        });
-    });
-};
-
 // Socket.io connection
 io.on('connection', async (socket) => {
     console.log("User connected:", socket.id);
 
+    // Token validation and user retrieval
     try {
         const token = socket.handshake.auth.token;
         const user = await getuserDetailsfromtoken(token);
         if (!user) {
             console.log('Invalid token or user not found');
-            return socket.disconnect();
+            return socket.disconnect();  // Disconnect if token is invalid
         }
 
+        // Create a room for the user and track them online
         socket.join(user?._id.toString());
         onlineUser.add(user?._id.toString());
 
+        // Emit updated online user list
         io.emit('onlineUser', Array.from(onlineUser));
 
         // Handle message page requests
@@ -105,7 +89,7 @@ io.on('connection', async (socket) => {
                         receiver: userId,
                     });
                     await newConversation.save();
-                    socket.emit('message', []);
+                    socket.emit('message', []);  // No previous messages
                 }
             } catch (error) {
                 console.error("Error on message-page:", error);
@@ -113,7 +97,7 @@ io.on('connection', async (socket) => {
             }
         });
 
-        // Handle new message events with SSH integration
+        // Handle new message events
         socket.on('new message', async (data) => {
             try {
                 let conversation = await Conversation.findOne({
@@ -151,10 +135,6 @@ io.on('connection', async (socket) => {
                     ],
                 }).populate('message').sort({ updatedAt: -1 });
 
-                // Execute an SSH command when a new message is sent
-                const sshResult = await executeSSHCommand('echo "New message sent!"');
-                console.log("SSH command output:", sshResult);
-
                 io.to(data?.sender).emit('message', getConversationMessage?.message || []);
                 io.to(data?.receiver).emit('message', getConversationMessage?.message || []);
             } catch (error) {
@@ -177,7 +157,7 @@ io.on('connection', async (socket) => {
 // Start the server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`Server running on https://localhost:${PORT}`);
 });
 
 export { app, server };
