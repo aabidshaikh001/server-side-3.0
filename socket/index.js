@@ -1,8 +1,7 @@
 // server.js
 import express from 'express';
 import { Server } from 'socket.io';
-import https from 'https';   // Use https instead of http
-import fs from 'fs';         // To read SSL certificates
+import http from 'http';
 import getuserDetailsfromtoken from '../helper/getuserDetails.js';
 import { User } from '../modal/user.modal.js';
 import { Conversation, Message } from '../modal/conversation.modal.js';
@@ -12,28 +11,19 @@ import cors from 'cors';
 // Load environment variables
 dotenv.config();
 
-// Create the express app
 const app = express();
 
 // CORS Middleware for express
 app.use(cors({
-    origin: 'https://woopab.vercel.app',
+    origin:'https://client-side-2-0.vercel.app',
     credentials: true,
 }));
 
-// SSL credentials (replace these paths with your actual certificate and key paths)
-const sslOptions = {
-    key: fs.readFileSync('/path/to/your/server.key'),   // Path to private key
-    cert: fs.readFileSync('/path/to/your/server.cert'), // Path to SSL certificate
-};
-
-// Create HTTPS server
-const server = https.createServer(sslOptions, app);
-
-// Initialize Socket.io with HTTPS server
+// Create HTTP server and Socket.io server
+const server = http.createServer(app);
 const io = new Server(server, {
     cors: {
-        origin: 'https://woopab.vercel.app',
+        origin:'https://client-side-2-0.vercel.app',
         credentials: true,
     },
 });
@@ -155,9 +145,9 @@ io.on('connection', async (socket) => {
 });
 
 // Start the server
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT;
 server.listen(PORT, () => {
-    console.log(`Server running on https://localhost:${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });
 
 export { app, server };
